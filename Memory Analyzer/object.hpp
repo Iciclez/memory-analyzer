@@ -47,7 +47,7 @@ private:
 
 	std::vector<uint8_t> memory_instance;
 	std::unordered_map<uint32_t, std::vector<uint8_t>> memory_edit;
-	std::unordered_map<uint64_t, instruction> disasm_table;
+	std::unordered_map<uint64_t, instruction> disassembly_table;
 
 	std::unordered_map<void*, void*> api_hook;
 	std::unordered_map<void*, std::string> api_name;

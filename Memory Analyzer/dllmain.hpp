@@ -1,7 +1,6 @@
 #pragma once
 #include <windows.h>
 #include "logger.hpp"
-#include "zephyrus.hpp"
 
 class dllmain
 {
@@ -14,4 +13,3 @@ public:
 };
 
 extern logger l;
-extern zephyrus z;

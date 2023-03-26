@@ -39,6 +39,12 @@
     <ClInclude Include="logger.hpp">
       <Filter>Header Files\util</Filter>
     </ClInclude>
+    <ClInclude Include="mnemosyne.hpp">
+      <Filter>Header Files\util</Filter>
+    </ClInclude>
+    <ClInclude Include="disassembler.hpp">
+      <Filter>Header Files\util</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -51,6 +57,12 @@
       <Filter>Source Files\memory_analyzer</Filter>
     </ClCompile>
     <ClCompile Include="logger.cpp">
+      <Filter>Source Files\util</Filter>
+    </ClCompile>
+    <ClCompile Include="mnemosyne.cpp">
+      <Filter>Source Files\util</Filter>
+    </ClCompile>
+    <ClCompile Include="disassembler.cpp">
       <Filter>Source Files\util</Filter>
     </ClCompile>
   </ItemGroup>

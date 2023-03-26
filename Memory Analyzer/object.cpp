@@ -8,6 +8,7 @@
 
 #include "detours.h"
 #include "dllmain.hpp"
+#include "mnemosyne.hpp"
 
 object::object(HMODULE module_handle)
 	: module_handle(module_handle), nt(ImageNtHeader(module_handle))
@@ -50,10 +51,10 @@ void object::initialize()
 		reinterpret_cast<uint8_t*>(this->memory_start()),
 		reinterpret_cast<uint8_t*>(this->memory_end()));
 
-	std::vector<instruction> opcode = disassembler(this->memory_start(), z.readmemory(this->memory_start(), this->memory_size())).get_instructions();
+	std::vector<instruction> opcode = disassembler(this->memory_start(), mnemosyne::address(this->memory_start()).read_memory(this->memory_size())).get_instructions();
 	for (const instruction &n : opcode)
 	{
-		disasm_table[n.address] = n;
+		disassembly_table[n.address] = n;
 	}
 }
 
@@ -71,7 +72,7 @@ void object::api_hook_check()
 
 		if (*reinterpret_cast<uint8_t*>(pCode) == 0xe9)
 		{
-			disassembler memory(reinterpret_cast<uint64_t>(pCode), z.readmemory(reinterpret_cast<uint64_t>(pCode), 5));
+			disassembler memory(reinterpret_cast<uint64_t>(pCode), mnemosyne::address(reinterpret_cast<uint64_t>(pCode)).read_memory(5));
 			void *address_to = reinterpret_cast<void*>(memory.get_instructions().at(0).detail->x86.operands[0].imm);
 
 			if (pszName && object_pointer->api_hook.count(pCode) == 0 || object_pointer->api_hook.at(pCode) != address_to)
@@ -222,7 +223,7 @@ void object::on_memory_patch(edit_type type, uint32_t address, size_t size, cons
 		else
 		{
 			string_stream << " - " << std::hex << std::setw(8) << std::setfill('0') << std::uppercase << address << '(' << std::dec << size << "): " <<
-				zephyrus::byte_to_string(this->instruction_bytes(opcodes_from)) << " to " << zephyrus::byte_to_string(this->instruction_bytes(opcodes_to));
+				mnemosyne::util::byte_to_string(this->instruction_bytes(opcodes_from)) << " to " << mnemosyne::util::byte_to_string(this->instruction_bytes(opcodes_to));
 		
 			string_stream << "\n{\n" << get_instructions_string(opcodes_from, "\n", "  ");
 
@@ -247,7 +248,7 @@ void object::on_memory_patch(edit_type type, uint32_t address, size_t size, cons
 	else
 	{
 		string_stream << " - " << std::hex << std::setw(8) << std::setfill('0') << std::uppercase << address << '(' << std::dec << size << "): " <<
-			zephyrus::byte_to_string(from) << " to " << zephyrus::byte_to_string(to);
+			mnemosyne::util::byte_to_string(from) << " to " << mnemosyne::util::byte_to_string(to);
 
 		disassembler from_disassembler(address, from);
 		disassembler to_disassembler(address, to);
@@ -310,7 +311,7 @@ std::vector<instruction> object::associated_instructions(uint32_t address, std::
 	
 	if (address >= this->memory_start() && address <= this->memory_end())
 	{
-		if (disasm_table.count(address) == 1)
+		if (disassembly_table.count(address) == 1)
 		{
 			//forwards search
 			size_t current_address = address;
@@ -318,11 +319,11 @@ std::vector<instruction> object::associated_instructions(uint32_t address, std::
 
 			while (current_size < size)
 			{
-				opcodes.push_back(disasm_table[current_address]);
-				current_size += disasm_table[current_address].size;
+				opcodes.push_back(disassembly_table[current_address]);
+				current_size += disassembly_table[current_address].size;
 				
 				//update current_address last
-				current_address += disasm_table[current_address].size;
+				current_address += disassembly_table[current_address].size;
 			}
 
 		}
@@ -330,7 +331,7 @@ std::vector<instruction> object::associated_instructions(uint32_t address, std::
 		{
 			uint32_t try_address = address;
 
-			while (disasm_table.count(try_address) == 0)
+			while (disassembly_table.count(try_address) == 0)
 			{
 				try_address -= 1;
 			}
@@ -354,7 +355,7 @@ std::vector<instruction> object::associated_instructions(uint32_t address, const
 {
 	if (address >= this->memory_start() && address <= this->memory_end())
 	{
-		if (disasm_table.count(address) == 1)
+		if (disassembly_table.count(address) == 1)
 		{
 			return disassembler(address, this->associated_memory(address, bytes)).get_instructions();
 		}
@@ -362,7 +363,7 @@ std::vector<instruction> object::associated_instructions(uint32_t address, const
 		{
 			uint32_t try_address = address;
 
-			while (disasm_table.count(try_address) == 0)
+			while (disassembly_table.count(try_address) == 0)
 			{
 				try_address -= 1;
 			}
@@ -391,7 +392,7 @@ std::vector<uint8_t> object::associated_memory(uint32_t address, const std::vect
 
 	if (address >= this->memory_start() && address <= this->memory_end())
 	{
-		if (disasm_table.count(address) == 1)
+		if (disassembly_table.count(address) == 1)
 		{
 			//forwards search
 			associated_bytes.insert(associated_bytes.end(), bytes.begin(), bytes.end());
@@ -401,24 +402,24 @@ std::vector<uint8_t> object::associated_memory(uint32_t address, const std::vect
 
 			while (current_size < bytes.size())
 			{
-				if (current_size + disasm_table[current_address].size > bytes.size())
+				if (current_size + disassembly_table[current_address].size > bytes.size())
 				{
 					associated_bytes.insert(associated_bytes.end(),
 						memory_instance.begin() + (address - this->memory_start()) + bytes.size(),
-						memory_instance.begin() + (current_address - this->memory_start()) + disasm_table[current_address].size);
+						memory_instance.begin() + (current_address - this->memory_start()) + disassembly_table[current_address].size);
 				}
 
-				current_size += disasm_table[current_address].size;
+				current_size += disassembly_table[current_address].size;
 
 				//update current_address last
-				current_address += disasm_table[current_address].size;
+				current_address += disassembly_table[current_address].size;
 			}
 		}
 		else
 		{
 			uint32_t try_address = address;
 
-			while (disasm_table.count(try_address) == 0)
+			while (disassembly_table.count(try_address) == 0)
 			{
 				try_address -= 1;
 			}
