@@ -95,6 +95,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -125,6 +126,7 @@
     <ClInclude Include="memory_analyzer.hpp" />
     <ClInclude Include="mnemosyne.hpp" />
     <ClInclude Include="object.hpp" />
+    <ClInclude Include="Zydis.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="disassembler.cpp" />
@@ -133,6 +135,7 @@
     <ClCompile Include="memory_analyzer.cpp" />
     <ClCompile Include="mnemosyne.cpp" />
     <ClCompile Include="object.cpp" />
+    <ClCompile Include="Zydis.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -51,11 +51,16 @@ void object::initialize()
 		reinterpret_cast<uint8_t*>(this->memory_start()),
 		reinterpret_cast<uint8_t*>(this->memory_end()));
 
-	std::vector<instruction> opcode = disassembler(this->memory_start(), mnemosyne::address(this->memory_start()).read_memory(this->memory_size())).get_instructions();
-	for (const instruction &n : opcode)
+	disassembler disassembly(this->memory_start(), mnemosyne::address(this->memory_start()).read_memory(this->memory_size()));
+
+	std::cout << "memory analyzer creating disassembly table with " << disassembly.get().size() << " instructions." << std::endl;
+
+	for (const auto& [address, instruction] : disassembly.get())
 	{
-		disassembly_table[n.address] = n;
+		disassembly_table[address] = instruction;
 	}
+
+	std::cout << "memory analyzer initialized on memory_start=" << std::hex << this->memory_start() << ", memory_end=" << std::hex << this->memory_end() << ", size=" << this->memory_size() << std::endl;
 }
 
 void object::api_hook_check()
@@ -73,7 +78,7 @@ void object::api_hook_check()
 		if (*reinterpret_cast<uint8_t*>(pCode) == 0xe9)
 		{
 			disassembler memory(reinterpret_cast<uint64_t>(pCode), mnemosyne::address(reinterpret_cast<uint64_t>(pCode)).read_memory(5));
-			void *address_to = reinterpret_cast<void*>(memory.get_instructions().at(0).detail->x86.operands[0].imm);
+			void *address_to = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(pCode) + memory.get().at(0).second.operands[0].imm.value.u + 5);
 
 			if (pszName && object_pointer->api_hook.count(pCode) == 0 || object_pointer->api_hook.at(pCode) != address_to)
 			{
@@ -105,94 +110,61 @@ void object::api_hook_check()
 
 void object::memory_patch_check()
 {
-	for (size_t n = 0; n < memory_instance.size(); ++n)
+	for (size_t offset = 0; offset < memory_instance.size(); ++offset)
 	{
-		uint32_t current_memory_address = this->memory_start() + n;
-		if (memory_edit.count(current_memory_address) > 0)
+		uint32_t current_memory_address = this->memory_start() + offset;
+
+		if (memory_edit.count(current_memory_address) == 0 && this->in_memory_edit_ranges(current_memory_address) == false)
 		{
-			std::vector<uint8_t> modified = memory_edit.at(current_memory_address);
-			std::vector<uint8_t> current;
-			std::vector<uint8_t> original;
-
-			for (size_t x = 0; x < modified.size(); ++x)
+			if (memory_instance.at(offset) != *reinterpret_cast<uint8_t*>(current_memory_address))
 			{
-				current.push_back(*reinterpret_cast<uint8_t*>(this->memory_start() + n + x));
-				original.push_back(memory_instance.at(n + x));
-			}
+				std::vector<uint8_t> altered_instance; // synonymous with saved_instance below
 
-			//current memory is no longer the same as the saved instance of altered memory
-			if (modified.size() != current.size() || !std::equal(current.begin(), current.end(), modified.begin()))
-			{
-				//reverted back to original
-				if (std::equal(current.begin(), current.end(), original.begin()))
+				for (size_t size_of_change = 0; memory_instance.at(offset + size_of_change) != *reinterpret_cast<uint8_t*>(this->memory_start() + offset + size_of_change); ++size_of_change)
 				{
-					this->on_memory_patch(reverted, current_memory_address, modified.size(), modified, current);
-
-					memory_edit.erase(this->memory_start() + n);
+					altered_instance.push_back(*reinterpret_cast<uint8_t*>(this->memory_start() + offset + size_of_change));
 				}
-				//changed to other memory
-				else
-				{
-					this->on_memory_patch(remodification, current_memory_address, modified.size(), modified, current);
+				
+				std::vector<uint8_t> initial_instance(memory_instance.begin() + offset, memory_instance.begin() + offset + altered_instance.size());
+				this->on_memory_patch(modification, current_memory_address, altered_instance.size(), initial_instance, altered_instance);
 
-					memory_edit.at(this->memory_start() + n) = current;
+				memory_edit[current_memory_address] = altered_instance;
+				// this->merge_intervals(this->memory_edit_ranges, std::make_pair(current_memory_address, current_memory_address + altered_instance.size()));
 
-				}
+				offset += altered_instance.size();
 			}
-			n += modified.size() - 1;
 		}
 		else
 		{
-			if (memory_instance.at(n) != *reinterpret_cast<uint8_t*>(current_memory_address))
+			std::vector<uint8_t> saved_instance = memory_edit.at(current_memory_address); // synonymous with altered_instance above
+			std::vector<uint8_t> current_instance = mnemosyne::address(current_memory_address).read_memory(saved_instance.size());
+			
+			//current memory is no longer the same as the saved instance of altered memory
+			if (current_instance != saved_instance)
 			{
-				std::vector<uint8_t> original;
-				std::vector<uint8_t> modified;
-				size_t m = n;
-				while (memory_instance.at(m) != *reinterpret_cast<uint8_t*>(this->memory_start() + m))
+				std::vector<uint8_t> initial_instance(memory_instance.begin() + offset, memory_instance.begin() + offset + saved_instance.size());
+
+				if (current_instance == initial_instance) //reverted back to original
+				{ 
+					this->on_memory_patch(reverted, current_memory_address, saved_instance.size(), saved_instance, current_instance);
+
+					memory_edit.erase(this->memory_start() + offset);
+				}				
+				else //changed to other memory
 				{
-					original.push_back(memory_instance.at(m));
-					modified.push_back(*reinterpret_cast<uint8_t*>(this->memory_start() + m));
-					++m;
+					this->on_memory_patch(remodification, current_memory_address, saved_instance.size(), saved_instance, current_instance);
+
+					memory_edit.at(this->memory_start() + offset) = current_instance;
 				}
-
-				this->on_memory_patch(modification, current_memory_address, m - n, original, modified);
-
-				memory_edit.emplace(current_memory_address, modified);
-
-				n = m;
 			}
+			offset += saved_instance.size() - 1; // TODO: should the -1 be here?
 		}
 	}
 }
 
-void object::on_memory_patch(edit_type type, uint32_t address, size_t size, const std::vector<uint8_t>& from, const std::vector<uint8_t>& to, bool reconstruct)
+void object::on_memory_patch(edit_type type, uint32_t address, size_t size, const std::vector<uint8_t>& from, const std::vector<uint8_t>& to, bool calibrate_address)
 {
 	//function that provides information on the details of the memory edit
-
-	auto get_instructions_string = [](
-		const std::vector<instruction>& instructions, 
-		const std::string& separator = "\n", 
-		const std::string& begin = "", 
-		const std::string& end = "") -> std::string
-	{
-		std::stringstream stream;
-
-		for (size_t n = 0; n < instructions.size(); ++n)
-		{
-			stream << begin << instructions.at(n).mnemonic << ' ' << instructions.at(n).op_str << end;
-
-			if (n + 1 != instructions.size())
-			{
-				stream << separator;
-			}
-		}
-
-		std::string result(stream.str());
-
-		std::transform(result.begin(), result.end(), result.begin(), toupper);
-
-		return result;
-	};
 
 	std::stringstream string_stream;
 	switch (type)
@@ -210,42 +182,7 @@ void object::on_memory_patch(edit_type type, uint32_t address, size_t size, cons
 		break;
 	}
 
-	if (reconstruct)
-	{
-		std::vector<instruction> opcodes_from = this->associated_instructions(address, from);
-		std::vector<instruction> opcodes_to = this->associated_instructions(address, to);
-
-		if (opcodes_from.empty() && opcodes_to.empty())
-		{
-			//fall-back, do not reconstruct this time
-			this->on_memory_patch(type, address, size, from, to, false);
-		}
-		else
-		{
-			string_stream << " - " << std::hex << std::setw(8) << std::setfill('0') << std::uppercase << address << '(' << std::dec << size << "): " <<
-				mnemosyne::util::byte_to_string(this->instruction_bytes(opcodes_from)) << " to " << mnemosyne::util::byte_to_string(this->instruction_bytes(opcodes_to));
-		
-			string_stream << "\n{\n" << get_instructions_string(opcodes_from, "\n", "  ");
-
-			if (opcodes_from.size() > 0)
-			{
-				string_stream << '\n';
-			}
-
-			string_stream << "->";
-
-			if (opcodes_to.size() > 0)
-			{
-				string_stream << '\n';
-			}
-
-			string_stream << get_instructions_string(opcodes_to, "\n", "  ") << "\n}";
-
-			std::cout << string_stream.str() << '\n';
-			l.log("%s", string_stream.str().c_str());
-		}
-	}
-	else
+	if (calibrate_address == false)
 	{
 		string_stream << " - " << std::hex << std::setw(8) << std::setfill('0') << std::uppercase << address << '(' << std::dec << size << "): " <<
 			mnemosyne::util::byte_to_string(from) << " to " << mnemosyne::util::byte_to_string(to);
@@ -253,27 +190,47 @@ void object::on_memory_patch(edit_type type, uint32_t address, size_t size, cons
 		disassembler from_disassembler(address, from);
 		disassembler to_disassembler(address, to);
 
-		if (from_disassembler.get_instructions().size() > 0 || to_disassembler.get_instructions().size() > 0)
+		if (from_disassembler.get().size() > 0 || to_disassembler.get().size() > 0)
 		{
-			string_stream << "\n{\n" << from_disassembler.get_instructions_string("\n", "  ");
+			string_stream << "\n{\n" << from_disassembler.as_string("\n", "  ");
 
-			if (from_disassembler.get_instructions().size() > 0)
+			if (from_disassembler.get().size() > 0)
 			{
 				string_stream << '\n';
 			}
 
 			string_stream << "->";
 
-			if (to_disassembler.get_instructions().size() > 0)
+			if (to_disassembler.get().size() > 0)
 			{
 				string_stream << '\n';
 			}
 
-			string_stream << to_disassembler.get_instructions_string("\n", "  ") << "\n}";
+			string_stream << to_disassembler.as_string("\n", "  ") << "\n}";
 		}
 
 		std::cout << string_stream.str() << '\n';
 		l.log("%s", string_stream.str().c_str());
+	}
+	else
+	{
+		auto [calibrated_address, calibrated_from, calibrated_to] = this->calibrate_associated_bytes(address, from, to);
+
+		if (calibrated_from.size() != calibrated_to.size())
+		{
+			std::cout << "[warn] memory patch - misaligned calibrated_from and calibrated_to" << std::endl;
+		}
+
+		if (calibrated_from.size() > MEMORY_ANALYZER_OBJECT_MAXIMUM_CALIBRATION_SIZE)
+		{
+			std::cout << "[warn] memory patch - calibrated address and bytes exceed the calibration size limit. falling back!, size=" << std::dec << calibrated_from.size() << ", address=" << std::uppercase << std::hex << calibrated_address << std::endl;
+			
+			this->on_memory_patch(type, address, size, from, to, false);
+		}
+		else
+		{
+			this->on_memory_patch(type, calibrated_address, calibrated_from.size(), calibrated_from, calibrated_to, false);
+		}
 	}
 }
 
@@ -293,151 +250,103 @@ void object::on_api_hook(void * from, void * to, const std::string & module_from
 	l.log("%s", string_stream.str().c_str());
 }
 
-std::vector<uint8_t> object::instruction_bytes(const std::vector<instruction>& opcodes)
+std::tuple<uint32_t, std::vector<uint8_t>, std::vector<uint8_t>> object::calibrate_associated_bytes(uint32_t address, const std::vector<uint8_t> &from, const std::vector<uint8_t> &to)
 {
-	std::vector<uint8_t> memory;
+	uint32_t start_address = address;
 
-	for (const instruction &n : opcodes)
+	while (disassembly_table.count(start_address) == 0)
 	{
-		memory.insert(memory.end(), n.bytes, n.bytes + n.size);
+		if (start_address >= this->memory_start() && start_address <= this->memory_end())
+		{
+			start_address -= 1;
+		}
+		else
+		{
+			return std::make_tuple(address, from, to);
+		}
 	}
 
-	return memory;
-}
+	std::vector<uint8_t> calibrated_from;
+	std::vector<uint8_t> calibrated_to;
 
-std::vector<instruction> object::associated_instructions(uint32_t address, std::size_t size)
-{
-	std::vector<instruction> opcodes;
+	if (start_address < address)
+	{
+		calibrated_from.insert(calibrated_from.end(), memory_instance.begin() + (start_address - this->memory_start()), memory_instance.begin() + (address - this->memory_start()));
+		calibrated_to.insert(calibrated_to.end(), memory_instance.begin() + (start_address - this->memory_start()), memory_instance.begin() + (address - this->memory_start()));
+	}
+
+	calibrated_from.insert(calibrated_from.end(), from.begin(), from.end());
+	calibrated_to.insert(calibrated_to.end(), to.begin(), to.end());
+
+	uint32_t end_address = start_address + calibrated_from.size();
 	
-	if (address >= this->memory_start() && address <= this->memory_end())
+	while (disassembly_table.count(end_address) == 0)
 	{
-		if (disassembly_table.count(address) == 1)
+		if (end_address >= this->memory_start() && end_address <= this->memory_end())
 		{
-			//forwards search
-			size_t current_address = address;
-			size_t current_size = 0;
-
-			while (current_size < size)
-			{
-				opcodes.push_back(disassembly_table[current_address]);
-				current_size += disassembly_table[current_address].size;
-				
-				//update current_address last
-				current_address += disassembly_table[current_address].size;
-			}
-
+			end_address += 1;
 		}
 		else
 		{
-			uint32_t try_address = address;
-
-			while (disassembly_table.count(try_address) == 0)
-			{
-				try_address -= 1;
-			}
-
-			if (try_address >= this->memory_start() && try_address <= this->memory_end())
-			{
-				return this->associated_instructions(try_address, address - try_address + size);
-			}
-		}
-	}
-
-	return opcodes;
-}
-
-std::vector<uint8_t> object::associated_memory(uint32_t address, std::size_t size)
-{
-	return this->instruction_bytes(this->associated_instructions(address, size));
-}
-
-std::vector<instruction> object::associated_instructions(uint32_t address, const std::vector<uint8_t>& bytes)
-{
-	if (address >= this->memory_start() && address <= this->memory_end())
-	{
-		if (disassembly_table.count(address) == 1)
-		{
-			return disassembler(address, this->associated_memory(address, bytes)).get_instructions();
-		}
-		else
-		{
-			uint32_t try_address = address;
-
-			while (disassembly_table.count(try_address) == 0)
-			{
-				try_address -= 1;
-			}
-
-			if (try_address >= this->memory_start() && try_address <= this->memory_end())
-			{
-				std::vector<uint8_t> associated_bytes;
-
-				associated_bytes.insert(associated_bytes.begin(),
-					memory_instance.begin() + (try_address - this->memory_start()),
-					memory_instance.begin() + (address - this->memory_start()));
-
-				associated_bytes.insert(associated_bytes.end(), bytes.begin(), bytes.end());
-
-				return this->associated_instructions(try_address, associated_bytes);
-			}
-		}
-	}
-
-	return std::vector<instruction>();
-}
-
-std::vector<uint8_t> object::associated_memory(uint32_t address, const std::vector<uint8_t>& bytes)
-{
-	std::vector<uint8_t> associated_bytes;
-
-	if (address >= this->memory_start() && address <= this->memory_end())
-	{
-		if (disassembly_table.count(address) == 1)
-		{
-			//forwards search
-			associated_bytes.insert(associated_bytes.end(), bytes.begin(), bytes.end());
-
-			size_t current_address = address;
-			size_t current_size = 0;
-
-			while (current_size < bytes.size())
-			{
-				if (current_size + disassembly_table[current_address].size > bytes.size())
-				{
-					associated_bytes.insert(associated_bytes.end(),
-						memory_instance.begin() + (address - this->memory_start()) + bytes.size(),
-						memory_instance.begin() + (current_address - this->memory_start()) + disassembly_table[current_address].size);
-				}
-
-				current_size += disassembly_table[current_address].size;
-
-				//update current_address last
-				current_address += disassembly_table[current_address].size;
-			}
-		}
-		else
-		{
-			uint32_t try_address = address;
-
-			while (disassembly_table.count(try_address) == 0)
-			{
-				try_address -= 1;
-			}
-
-			if (try_address >= this->memory_start() && try_address <= this->memory_end())
-			{
-				associated_bytes.insert(associated_bytes.begin(),
-					memory_instance.begin() + (try_address - this->memory_start()),
-					memory_instance.begin() + (address - this->memory_start()));
-
-				associated_bytes.insert(associated_bytes.end(), bytes.begin(), bytes.end());
-
-				return this->associated_memory(try_address, associated_bytes);
-			}
+			return std::make_tuple(start_address, calibrated_from, calibrated_to);
 		}
 	}
 	
-	return associated_bytes;
+	if (end_address > start_address + calibrated_from.size())
+	{
+		calibrated_from.insert(calibrated_from.end(), memory_instance.begin() + (start_address + calibrated_from.size() - this->memory_start()), memory_instance.begin() + (end_address - this->memory_start()));
+		calibrated_to.insert(calibrated_to.end(), memory_instance.begin() + (start_address + calibrated_to.size() - this->memory_start()), memory_instance.begin() + (end_address - this->memory_start()));
+	}
+
+	return std::make_tuple(start_address, calibrated_from, calibrated_to);
+}
+
+bool object::in_memory_edit_ranges(uint32_t memory_address)
+{
+	
+	for (const std::pair<uint32_t, uint32_t>& current_range : this->memory_edit_ranges)
+	{
+		if (current_range.first <= memory_address && memory_address <= current_range.second)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+std::vector<std::pair<uint32_t, uint32_t>> object::merge_intervals(std::vector<std::pair<uint32_t, uint32_t>> intervals, const std::pair<uint32_t, uint32_t>& new_interval)
+{
+	intervals.push_back(new_interval);
+
+	std::sort(intervals.begin(), intervals.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b) { return a.first < b.first; });
+
+	std::vector<std::pair<uint32_t, uint32_t>> res;
+
+	for (size_t i = 0; i < intervals.size(); ++i)
+	{
+		if (res.size() == 0)
+		{
+			res.push_back(intervals[i]);
+			continue;
+		}
+
+		if (res.back().second >= intervals[i].first)
+		{
+			auto& back = res.back();
+
+			if (back.second < intervals[i].second)
+			{
+				back.second = intervals[i].second;
+			}
+		}
+		else
+		{
+			res.push_back(intervals[i]);
+		}
+	}
+
+	return res;
 }
 
 std::size_t object_hash::operator()(const object & memory_object) const
